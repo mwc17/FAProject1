@@ -14,10 +14,12 @@ require("purrr")
 require("tidyr")
 require("readr")
 require("haven")
+require(lubridate)
 require("tidyselect")
 require("quanteda")
 require("quanteda.textstats")
 require("stopwords")
+require(seededlda)
 require("quanteda.textplots")
 require("gt")
 require("gtExtras")
@@ -216,23 +218,22 @@ topfeatures(dfm_other1, n=20)
 Topic analysis code:  
 Allows for a factor analysis to identify "underlying topics" in the question categories.
 ```{r}
-dfm_uncertain1<-dfm_trim(dfm_uncertain, min_termfreq = 0.5, termfreq_type = "quantile",
-                         max_docfreq = 0.5, docfreq_type = "prop")
-dfm_other1<-dfm_trim(dfm_other, min_termfreq = 0.5, termfreq_type = "quantile",
-                     max_docfreq = 0.5, docfreq_type = "prop")
-dfm2<-dfm_trim(dfm1, min_termfreq = 0.8, termfreq_type = "quantile",
-                     max_docfreq = 0.1, docfreq_type = "prop")
+dfm_uncertain1<-dfm_trim(dfm_uncertain, min_termfreq = 0.5, termfreq_type = "quantile", max_docfreq = 0.5, docfreq_type = "prop")
+dfm_other1<-dfm_trim(dfm_other, min_termfreq = 0.5, termfreq_type = "quantile", max_docfreq = 0.5, docfreq_type = "prop")
+#dfm2<-dfm_trim(dfm1, min_termfreq = 0.8, termfreq_type = "quantile",        #max_docfreq = 0.1, docfreq_type = "prop")
 topic2<-textmodel_lda(dfm_uncertain1, k = 5) #arbitrary, tune k
 topic3<-textmodel_lda(dfm_other1, k=5)
 #topic4<-textmodel_lda(dfm2, k=10)
 ```
 Here are the topics of the uncertain questions:
 ```{r}
-terms(topic2, 10) #uncertain
+#uncertain
+seededlda::terms(topic2, 10)
 ```
 And the certain questions:
 ```{r}
-terms(topic3, 10) #other
+#other
+seededlda::terms(topic3, 10)
 #terms(topic4, 10)
 ```
 Much like the previous charts, these could all be improved by defining dictionaries of words used in the questions and dictionarys of stop words to be ignored.
