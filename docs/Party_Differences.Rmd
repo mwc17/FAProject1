@@ -1,0 +1,235 @@
+---
+title: "Party Differences"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+date: "2023-08-08"
+---
+
+Required packages
+```{r}
+require("ggplot2")
+require("dplyr")
+require("purrr")
+require("tidyr")
+require("readr")
+require("haven")
+require("tidyselect")
+require("FDRestimation")
+require(ggcorrplot)
+require(gt)
+require(gtExtras)
+require(webshot2)
+```
+
+
+Importing data and creating new Likert-only dataset
+```{r}
+#Import dataset
+data1 <- read_dta("~/Downloads/Valid dataset_book.dta")
+data1<-zap_labels(data1)
+head(data1)
+
+#New dataset with likert variables only
+function1<-function(j){if(max(j)==5){return (TRUE)} else {return (FALSE)}} #keep variables with max of 5
+data_likert<-data1 %>% dplyr::select(where(is.numeric)) %>% keep(function1)
+head(data_likert)
+```
+***
+***
+This code generates univariate histograms for all the Likert variables in the dataset. It confirms that while some of the variables approximate a normal distribution, none are very normal and many are very skewed. The plot is not printed here as it is too large.  
+```
+#likert variables
+data1 %>% dplyr::select(where(is.numeric)) %>% keep(function1) %>% gather(factor_key=TRUE) %>% ggplot(aes(value))+geom_bar()+facet_wrap(~key, scales="free")
+```
+
+Similar graph for non-Likert numeric variables.  
+```
+#non-likert variables
+function2<-function(j){if(max(j)<5){return (TRUE)} else {return (FALSE)}}
+data1 %>% dplyr::select(where(is.numeric)) %>% keep(function2) %>% gather(factor_key=TRUE) %>% ggplot(aes(value))+geom_bar()+facet_wrap(~key, scales="free")
+
+```
+
+This is a quick correlation plot to investigate multi-colinearity. Variables that are highly correlated are co-linear, which can be problematic for parametric analysis methods. By visual inspection, correlation is fairly low.  
+```{r}
+cor_data<-cor(data_likert)
+ggcorrplot(cor_data)
+```
+***
+***
+Creating a binary variable for CCP vs Others  
+```{r}
+#(CCP=1, NON=all others)
+party<-rep(NA, length(data_likert))
+for(i in 1:length(data_likert$political)){
+  if (data_likert$political[i]==1) {party[i]<-"CCP"} else {party[i]<-"Other"}
+}
+party<-as.factor(party)
+data_likert$party<-party
+data_likert$party<-as.factor(party)
+head(data_likert$party)
+```
+
+This is code to check the question means for CCP and Other categories. By visual inspection, most are similar.  
+```{r}
+#Checking that means vary by party
+#By visual inspection means are very close
+mean_check<-data_likert %>% group_by(party) %>% summarise(across(everything(), list(mean)))
+head(mean_check)
+```
+***
+T Test:
+
+  A Student's T Test determines whether the means of two populations are statistically different.  
+  A T test makes several assumptions: the data is continuous, the sample is taken randomly, and the data is distributed approximately normally. The default T Test in R does not assume that sample variances are the same size. This data is not continuous or normal, which limits the validity of the results.  
+  A sample of the results are displayed below.  
+```{r}
+#t.test model
+modelname<-lapply(paste(colnames(data_likert[,-83]), "~ party"), as.formula)
+function3<-function(x) {
+  y<-t.test(x, data =data_likert)
+  p<-y$p.value
+  meanccp<-y$estimate[[1]]
+  meanother<-y$estimate[[2]]
+  lower<-y$conf.int[[1]]
+  upper<-y$conf.int[[2]]
+  return(c(meanccp, meanother, lower, upper, p))
+  }
+t_results<-lapply(modelname, function3)
+t_results<-t(as.data.frame(t_results))
+rownames(t_results)<-colnames(data_likert[,-83])
+#Adjusting p-values using Benjamini-Hochberg method (default alpha=0.05)
+t_results[,5]<-p.fdr(pvalues=t_results[,5])$`Results Matrix`[[2]]
+colnames(t_results)<-c("mean_ccp", "mean_other", "conf_lower", "conf_upper", "p-value")
+head(t_results)
+```
+
+***
+The function below performs a regression for each variable with party affiliation as the predictor. This provides insight into which parties answer differently from the CCP.  
+A factor regression assumes a linear relationship between explanatory and outcome variables as well as normality, little multicolinearity, and constant variance. As mentioned above, the data is often not normally distributed, and there are likely some problems with colinearity.  
+A Benjamini-Hochstein correction for multiple testing is used to adjust the p-value as well.  
+```{r}
+#lm model
+modelname1<-lapply(paste(colnames(data_likert[,-83]), "~ as.factor(political)"), as.formula)
+function4<-function(x) {
+  y<-lm(x, data =data_likert)
+  intercept<-y$coefficients[[1]]
+  p0<-summary(y)$coefficients[1,4]
+  pol2<-y$coefficients[[2]]
+  p2<-summary(y)$coefficients[2,4]
+  pol3<-y$coefficients[[3]]
+  p3<-summary(y)$coefficients[3,4]
+  pol4<-y$coefficients[[4]]
+  p4<-summary(y)$coefficients[4,4]
+  pol5<-y$coefficients[[5]]
+  p5<-summary(y)$coefficients[5,4]
+  return(c(intercept, p0, pol2, p2, pol3, p3, pol4, p4, pol5, p5))
+}
+lm_results<-lapply(modelname1, function4)
+lm_results<-t(as.data.frame(lm_results))
+#Benjamini-Hochberg Adjusting p-values (alpha=0.05)
+lm_results[,4]<-p.fdr(pvalues=lm_results[,4])$`Results Matrix`[[2]]
+lm_results[,6]<-p.fdr(pvalues=lm_results[,6])$`Results Matrix`[[2]]
+lm_results[,8]<-p.fdr(pvalues=lm_results[,8])$`Results Matrix`[[2]]
+lm_results[,10]<-p.fdr(pvalues=lm_results[,10])$`Results Matrix`[[2]]
+colnames(lm_results)<-c("CCP_slope", "ccp_p", "CCP_applicant", "applicant_p", "demo", "dem_p", "none", "none_p", "masses", "masses_p")
+rownames(lm_results)<-colnames(data_likert[,-83])
+head(lm_results)
+```
+
+***
+Table of all questions that have significantly different mean responses by party.  
+```{r}
+table1<-as.data.frame(cbind(t_results, lm_results))
+table1<-table1[,-c(3, 4)] #remove confidence interval
+vars<- ifelse(table1[,3]<=0.05 | table1[,7]<=0.05 | table1[,9]<=0.05 | table1[,11]<=0.05 | table1[,13]<=0.05, 1, 0) #Column is 1 for significant questions
+table1<-table1 %>% filter(vars==1)
+table1<-gt(as.data.frame(table1), rownames_to_stub = TRUE)
+table1<-
+  table1 |>
+  tab_header( title="Difference in Response by Party") |>
+  tab_source_note(source_note="Key: Highlighted cells are significant. P-Values have been Bejamini-Hochberg corrected.")|>
+  tab_source_note(source_note= "For the factor regression, CCP is the baseline.Small p-values indicate that the mean responses from that party differ from the mean CCP response.") |>
+  tab_stubhead(label="Question") |>
+  tab_spanner(label="Student's T-Test", columns=c("mean_ccp", "mean_other", "p-value")) |>
+  tab_spanner(label="Regression as Factor", columns=c("CCP_slope", "ccp_p", "CCP_applicant", "applicant_p","demo", "dem_p", "none", "none_p", "masses", "masses_p")) |>
+  cols_label(mean_ccp="CCP Mean", mean_other="Other Party Mean", `p-value`="P-Value", CCP_slope="Intercept (CCP)", ccp_p="Intercept P-Value", CCP_applicant="CCP Applicant", applicant_p="Applicant P-Value", demo="Democratic Party", dem_p="Democratic Party P-Value", none="No Party", none_p="No Party P-Value", masses="Masses", masses_p="Masses P-Value")|>
+  fmt_number(columns=everything(), rows=everything(), decimals=5)|> tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(mean_ccp, mean_other, `p-value`), rows=`p-value`<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(CCP_applicant, applicant_p), rows=applicant_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(demo, dem_p), rows=dem_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(none, none_p), rows=none_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(masses, masses_p), rows=masses_p<0.025))
+table1
+#gtsave(table1, 'partydifferences.png', vwidth=1500, vheight=1000) <-Will save table as png file
+```
+***
+***
+
+Code for E1T Table:  
+  This shows the different in risk affinity by party. The intercepts display the mean response for CCP respondents, and the coefficients are the difference in mean for each party.  
+  Perhaps an interesting next step would be to see how the party responses differ. That is, to see the proportion of responses (1, 2, 3, 4, 5) for each party. Maybe some are more unsure.   
+```{r}
+e1n<-c("E1N_30", "E1N_50", "E1N_70")
+table3<-as.data.frame(cbind(t_results, lm_results))
+tablen<-table3 %>% filter(rownames(table3) %in% e1n)
+rownames(tablen)<-c("30%", "50%", "70%")
+View(tablen)
+tablen<-tablen[,-c(3, 4)]
+tablen<-gt(as.data.frame(tablen), rownames_to_stub = TRUE)
+tablen<-
+  tablen |>
+  tab_header( title="Party Difference in Risk Affinity", subtitle="What is your willingness to carry out a reform given its probability of success?") |>
+  tab_source_note(source_note= "Key: Highlighted cells are significant. P-Values have been Benjamini-Hochstein corrected.") |>
+  tab_source_note(source_note= "In the factor regression, CCP is the baseline. The coefficient estimates indicate how mean responses from that party differ from the mean CCP response.") |>
+  tab_stubhead(label="Chance of Success") |>
+  tab_spanner(label="Student's T-Test", columns=c("mean_ccp", "mean_other", "p-value")) |>
+  tab_spanner(label="Regression as Factor", columns=c("CCP_slope", "ccp_p", "CCP_applicant", "applicant_p", "demo", "dem_p", "none", "none_p", "masses", "masses_p")) |>
+  cols_label(mean_ccp="CCP Mean", mean_other="Non-CCP Mean", 'p-value'="P-Value", CCP_slope="Intercept (CCP)", 
+             ccp_p="Intercept P-Value", CCP_applicant="CCP Applicant", applicant_p="CCP Applicant P-Value",demo="Democratic Party",
+             dem_p="Democratic Party P-Value", none="No Party", none_p="No Party P-Value", masses="Masses", masses_p="Masses P-Value")|>
+        fmt_number(columns=everything(), rows=everything(), decimals=5)|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(mean_ccp, mean_other, `p-value`), rows=`p-value`<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(CCP_applicant, applicant_p), rows=applicant_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(demo, dem_p), rows=dem_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(none, none_p), rows=none_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(masses, masses_p), rows=masses_p<0.025))|>
+  tab_style(style=cell_text(weight="bold"), locations=cells_column_labels())|>
+  tab_style(style=cell_text(weight="bold"), locations=cells_stub())
+tablen
+#Option to save file: gtsave(tablen, 'ReformWillingness.png', vwidth=1500, vheight=1000)
+
+```
+***
+Code for E1N Table:  
+  This shows the different in risk affinity by party. The intercepts display the mean response for CCP respondents, and the coefficients are the difference in mean for each party.  
+```{r}
+e1t<-c("E1T_30", "E1T_50", "E1T_70")
+tablet<-table3 %>% filter(rownames(table3) %in% e1t)
+rownames(tablet)<-c("30%", "50%", "70%")
+View(tablet)
+tablet<-tablet[,-c(3, 4)]
+tablet<-gt(as.data.frame(tablet), rownames_to_stub = TRUE)
+tablet<-
+  tablet |>
+  tab_header( title="Party Difference in Risk Affinity", subtitle="Were local cadres willing to carry out a reform 10 years ago given its probability of success?") |>
+  tab_source_note(source_note= "Key: Highlighted cells are significant. P-Values have been Benjamini-Hochstein corrected.") |>
+  tab_source_note(source_note= "In the factor regression, CCP is the baseline. The coefficient estimates indicate how mean responses from that party differ from the mean CCP response.") |>
+  tab_stubhead(label="Chance of Success") |>
+  tab_spanner(label="Student's T-Test", columns=c("mean_ccp", "mean_other", "p-value")) |>
+  tab_spanner(label="Regression as Factor", columns=c("CCP_slope", "ccp_p", "CCP_applicant", "applicant_p", "demo", "dem_p", "none", "none_p", "masses", "masses_p")) |>
+  cols_label(mean_ccp="CCP Mean", mean_other="Non-CCP Mean", 'p-value'="P-Value", CCP_slope="Intercept (CCP)", 
+             ccp_p="Intercept P-Value", CCP_applicant="CCP Applicant", applicant_p="CCP Applicant P-Value",demo="Democratic Party",
+             dem_p="Democratic Party P-Value", none="No Party", none_p="No Party P-Value", masses="Masses", masses_p="Masses P-Value")|>
+  fmt_number(columns=everything(), rows=everything(), decimals=5)|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(mean_ccp, mean_other, `p-value`), rows=`p-value`<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(CCP_applicant, applicant_p), rows=applicant_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(demo, dem_p), rows=dem_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(none, none_p), rows=none_p<0.025))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(masses, masses_p), rows=masses_p<0.025))|>
+  tab_style(style=cell_text(weight="bold"), locations=cells_column_labels())|>
+  tab_style(style=cell_text(weight="bold"), locations=cells_stub())
+tablet
+#option to save file: gtsave(table1, 'partydifferences.png', vwidth=1500, vheight=1000)
+```

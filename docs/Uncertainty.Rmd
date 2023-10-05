@@ -1,0 +1,281 @@
+---
+title: "Uncertain_Differences"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-08-23"
+---
+/newline
+Loading all Required Packages
+```{r}
+require("ggplot2")
+require("dplyr")
+require("purrr")
+require("tidyr")
+require("readr")
+require("haven")
+require("tidyselect")
+require("quanteda")
+require("quanteda.textstats")
+require("stopwords")
+require("quanteda.textplots")
+require("gt")
+require("gtExtras")
+require("webshot2")
+require("readxl")
+require("seededlda")
+require("FDRestimation")
+require(VGAM)
+require(extrafont)
+```
+/newline
+Importing dataset and creating Likert dataset
+```{r}
+#Import dataset
+data1 <- read_dta("~/Downloads/Valid dataset_book.dta")
+head(data1)
+
+#Import codebook
+codebook<-read_excel("~/Downloads/Codebook.xlsx")
+View(codebook)
+
+#New dataset with likert variables only
+function1<-function(j){if(max(j)==5){return (TRUE)} else {return (FALSE)}} #keep variables with max of 5
+data_likert<-data1 %>% dplyr::select(where(is.numeric)) %>% keep(function1)
+head(data_likert)
+```
+/newline
+Naive Test-based clustering:
+  This code and its results can give some insight into what text-processing can do.
+```{r}
+#change to corpus object (used for text analysis)
+codebook_clean<-corpus(codebook$Question)
+#Change language to Chinese (not necessary)
+meta(codebook_clean, "language") <- "chinese"
+#remove stopwords
+stopword_ch<-stopwords("zh", source="misc")
+#tokenize
+tokens1 <- codebook_clean %>% tokens(remove_punct = TRUE, remove_numbers = TRUE) %>% tokens_remove(pattern = stopword_ch)
+head (tokens1)
+#create dfm
+dfm1<-dfm(tokens1)
+topfeatures(dfm1)
+#option to remove commonly occuring words
+  #dfm2<-dfm(tokens1, remove=c(""))
+#Define dictionary
+  #dict<-dictionary(list(pressure = c(""), discretion= c("")))
+  #sortdfm <- dfm(tokens1, dictionary = my_dict, remove=c("))
+  #sortdfm
+```
+
+/newline
+
+Potentially useful code for clustering questions by words.
+```
+#Calculate euclidian distances and cluster
+dist1<-as.dist(textstat_dist(dfm_weight(dfm1, "prop")))
+hier1<-hclust(dist1)
+hier1$labels <- codebook$Variable
+plot(hier1, xlab = "Distance", main = "Euclidean Distance on Normalized Token Frequency")
+#above analysis needs refining: probably can trim on frequency to get desired result
+#topic modelling
+require(seededlda)
+topic1<-textmodel_lda(dfm1, k = 10) #arbitrary, tune k
+terms(topic1, 10)
+
+#factor analysis
+require(psych)
+eig1<-eigen(cor(data_likert))
+eig1$values
+scree(data_likert, pc=FALSE) #6-10ish factors
+fa.parallel(data_likert, fa="fa")
+#numer of factors
+nfac<-5
+model1 <- factanal(data_likert, nfac, rotation="varimax") #can test different rotations
+print(model1, digits=2, cutoff=0.3, sort=TRUE)
+#print
+loadings1 <- model1$loadings
+fa.diagram(loadings1)
+##join codebook and dataset, print high frequency words based on loadings
+##look at mean response by factor (is one close to 3)
+```
+/newline
+This is a quick plot of the mean response for all Likert questions.
+```{r}
+#Mean response for all questions
+likertmeans<-colMeans(data_likert)
+#likertmeans<-sort(likertmeans) Option to sort in ascending/descending order
+plot(likertmeans)
+```
+/newline
+The below code contains two ways to code uncertainty.  
+  The first way is very coarse, and uses question mean as a way to estimate uncertainty. However, one would expect both questions with a large proportion of 3s and questions with similar proportions of 2/4s or 1/5s to have a mean near 3.  
+```{r}
+#Uncertainty column: questions with mean responses between 2.5 and 3.5
+uncertain<-rep(0, length(likertmeans))
+for(i in 1:length(likertmeans)){
+  if (likertmeans[i]>3.5) {uncertain[i]<-"other"}
+  else if (likertmeans[i]<2.5) {uncertain[i]<-"other"}
+  else {uncertain[i]<-"uncertain"}
+}
+likertmeans<-as.data.frame(likertmeans)
+#likertmeans$uncertain<-uncertain
+likertmeans$Variable<-row.names(likertmeans)
+head(uncertain)
+```
+  The second way is preferred, as it tots the proportion of responses that are 3s. The proportion of 3s for each question is displayed in a table below. Questions with more than 20% uncertain responses are highlighted.  
+```{r}
+#Uncertainty column: proportion of 3s
+fun3<-function(x) {
+  sum(x==3)/sum(is.na(x)==FALSE)
+}
+freq<-as.data.frame(apply(data_likert, 2, fun3))
+colnames(freq)<-c("proportion")
+proportion<-freq$proportion
+freq<-gt(as.data.frame(freq), rownames_to_stub = TRUE)
+freq<-
+  freq |>
+  tab_header( title="Questions by Uncertainty") |>
+  tab_stubhead(label="Question") |>
+  tab_source_note(source_note="Uncertainty is calculated by the proportion of 'Neither Agree nor Disagree' responses. Highlighted questions have uncertain answers at least 20% of the time.") |>
+  cols_label(proportion="Proportion")|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=everything(), rows=proportion>0.2))|>
+  fmt_number(columns=everything(), rows=everything(), decimals=8)
+#gtsave(freq, "UncertainQuest2.png", vwidth=500, vheight=2000)
+```
+/newline
+We can see from the sample of questions uncertainty data that...
+```{r}
+likertmeans$proportion<-proportion
+likertmeans$uncertain<-ifelse(likertmeans$proportion>0.3, "uncertain", "certain")
+head(likertmeans)
+```
+/newline
+/newline
+Some text plots based on certainty:  
+/newline
+The plot below compares target documents (uncertain questions) to references documents (certain questions). The length of the bar corresponds to the frequency that words is used.  
+I believe that words in common are removed from this plot.  
+To get more information from this kind of text analysis, it may be useful to manually define a dictionary of words used as well as manually define a dictionary of neutral 'stopwords' to ignore.
+```{r}
+cluster_codebook<-full_join(codebook, likertmeans, join_by(Variable==Variable))
+cluster_codebook$uncertain<-as.factor(cluster_codebook$uncertain)
+head(cluster_codebook)
+
+#Comparison Plot
+stopword_ch<-stopwords("zh", source="misc")
+tokens_uncertain<-cluster_codebook %>% drop_na(uncertain) 
+tokens_uncertain<-corpus(tokens_uncertain$Question, docvars = data.frame(variable=tokens_uncertain$Variable, uncertain=tokens_uncertain$uncertain))
+tokens_uncertain<- tokens_uncertain %>% tokens(remove_punct = TRUE, remove_numbers = TRUE) %>% tokens_remove(pattern = stopword_ch, min_nchar=2)
+dfm_uncertain <- dfm(tokens_uncertain)
+dfm1<-dfm_remove(dfm1, pattern=c("党员"))
+dfm_uncertain<-dfm_trim(dfm_uncertain, min_termfreq = 0.3, termfreq_type = "quantile")
+
+key_uncertain <- textstat_keyness(dfm_uncertain, target=docvars(dfm_uncertain, "uncertain") =="uncertain")
+textplot_keyness(key_uncertain, font="SimHei")
+```
+/newline
+The below code creates two wordclouds, one for "certain" and one for "uncertain" questions. No words are ignored or removed and character size depends on word frequency.
+```{r}
+#create two subsets for uncertain and other
+cluster1<-cluster_codebook %>% filter(uncertain=="uncertain")
+cluster2<-cluster_codebook %>% filter(uncertain=="certain")
+#Natural Text Analysis
+cluster_uncertain<-corpus(cluster1$Question, docvars = data.frame(variable=cluster1$Variable, uncertain=cluster1$uncertain))
+cluster_other<-corpus(cluster2$Question, docvars = data.frame(variable=cluster2$Variable, uncertain=cluster2$uncertain))
+#define stopwords
+stopword_ch<-stopwords("zh_cn", source="marimo")
+#tokenize
+tokens_uncertain <- cluster_uncertain %>% tokens(remove_punct = TRUE, remove_numbers = TRUE) %>% tokens_remove(pattern = stopword_ch, min_nchar=2)
+tokens_other <- cluster_other %>% tokens(remove_punct = TRUE, remove_numbers = TRUE) %>% tokens_remove(pattern = stopword_ch, min_nchar=2)
+#create dfm
+dfm_uncertain<-dfm(tokens_uncertain)
+dfm_other<-dfm(tokens_other)
+#dfm_uncertain<-dfm_remove(dfm_uncertain, pattern=c("以下", "是否", "同意", "因素", "中国", "重要性","程度")) <--to remove words that appear frequently in both
+topfeatures(dfm_uncertain, n=30)
+#dfm_other<-dfm_remove(dfm_other, pattern=c("以下", "是否", "同意", "因素", "中国", "重要性","程度"))
+topfeatures(dfm_other, n=30)
+#wordclouds
+textplot_wordcloud(dfm_uncertain, font="SimHei")
+textplot_wordcloud(dfm_other, font="SimHei")
+```
+/newline
+This code allows for a manual look at the most frequently used *phrases* in the questions.
+```{r}
+#ngrams for uncertain
+ng_uncertain<-tokens_ngrams(tokens_uncertain, n=2:4)
+dfm_uncertain1<-dfm(ng_uncertain)
+topfeatures(dfm_uncertain1, n=20)
+#ngrams for other
+ng_other<-tokens_ngrams(tokens_other, n=2:4)
+dfm_other1<-dfm(ng_other)
+topfeatures(dfm_other1, n=20)
+```
+/newline
+/newline
+Topic analysis code:  
+Allows for a factor analysis to identify "underlying topics" in the question categories.
+```{r}
+dfm_uncertain1<-dfm_trim(dfm_uncertain, min_termfreq = 0.5, termfreq_type = "quantile",
+                         max_docfreq = 0.5, docfreq_type = "prop")
+dfm_other1<-dfm_trim(dfm_other, min_termfreq = 0.5, termfreq_type = "quantile",
+                     max_docfreq = 0.5, docfreq_type = "prop")
+dfm2<-dfm_trim(dfm1, min_termfreq = 0.8, termfreq_type = "quantile",
+                     max_docfreq = 0.1, docfreq_type = "prop")
+topic2<-textmodel_lda(dfm_uncertain1, k = 5) #arbitrary, tune k
+topic3<-textmodel_lda(dfm_other1, k=5)
+#topic4<-textmodel_lda(dfm2, k=10)
+```
+Here are the topics of the uncertain questions:
+```{r}
+terms(topic2, 10) #uncertain
+```
+And the certain questions:
+```{r}
+terms(topic3, 10) #other
+#terms(topic4, 10)
+```
+Much like the previous charts, these could all be improved by defining dictionaries of words used in the questions and dictionarys of stop words to be ignored.
+
+/newline
+
+***
+
+/newline
+
+Respondent uncertainty:  
+Here we take a quick look at the mean response for each respondent. The average response seems to hover around 3.7.
+```{r}
+likertmeans2<-rowMeans(data_likert)
+#plot
+lm2<-as.data.frame(likertmeans2)
+colnames(lm2)<-c("means")
+ggplot(data=lm2)+geom_density(aes(x=means))
+#uncertainty column (case basis)
+data_likert$uncertain<-rep(0, 1435)
+```
+This is code to identify respondent uncertainty by mean response, which is unused.
+```
+data_likert$uncertain<- ifelse(likertmeans2>3.5 | likertmeans2<2.5, "other", "uncertain")
+head(data_likert$uncertain)
+data_numeric$uncertain<-as.factor(data_likert$uncertain)
+```
+
+This code defines uncertainty as the proportion of 3s.  
+The average proportion of 3s is near 20 percent.
+```{r}
+fun3<-function(x) {sum(x==3)/sum(is.na(x)==FALSE)}
+unpercent<-apply(data_likert, 1, fun3)
+head(unpercent)
+mean(unpercent)
+```
+
+/newline
+
+Here, a linear regression is used to identify which demographic variables vary by certainty of respondent. The output identifies which variables vary significantly with how certain the respondent is.
+```{r}
+demo<-cbind(data1[,c(146:154, 156, 157)]) #demographic variables only
+demo$unpercent<-unpercent
+mod<-lm(unpercent~gender+birthyear+ethics+education+political+govlevel+poslevel+leadership+workyear+nativecadre+localcadre, demo)
+summary(mod)
+```

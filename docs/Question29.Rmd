@@ -1,0 +1,390 @@
+--- 
+title: "Question 29 Analyses"
+output:
+ html_document: default
+ pdf_document: default
+date: "2023-09-25"
+---
+
+Loading Required Packages
+```{r}
+require(dplyr)
+require(FDRestimation)
+require(gt)
+require(gtExtras)
+require(haven)
+require(MASS)
+require(purrr)
+require(tidyr)
+require(VGAM)
+require(webshot2)
+require(reshape2)
+```
+
+<br>
+
+Code to Import Dataset from Stata and re-class variables:  
+  It is easier to define all Likert-scale and Ranked questions as numeric, then re-define them as ordinal later if needed. Many functions only work on numeric variables.  
+  All demographic variables are re-categorized as factors.  
+```{r}
+data1 <- read_dta("~/Downloads/Valid dataset_book.dta") #Modify file path
+data1<-zap_labels(data1) #need to remove labels from STATA object
+data1<-data1 %>% mutate(across(c(`Q23_superior`, `Q23_resource`, `Q23_conflicts`,  `Q23_fatigue`, `Q23_politics`, `Q23_leaders`, `Q23_mass`, `Q23_counterparts`, `Q23_subordinates`, `Q23_meaningless`, `Q23_KPI`, `Q23_mistakes`, `Q25_minimize`, `Q25_onlyrequired`, `Q25_onlypermitted`, `Q25_stillsolve`, `Q25_stilltry`, `Q25_none`, `Q29_native`, `Q29_implement`,  `Q29_task`, `Q29_degree`, `Q29_mass`, `Q29_party`, `Q31_resign`, `birthyear`, `workyear`), as.numeric))
+data1<-data1 %>% mutate(across(c(source, index, reward, city, gender, ethics, education, political, govlevel, poslevel, leadership, nativecadre, localcadre), as.factor))
+#Q24???
+#Q30_reasoning drop
+head(data1)
+```
+
+<br>
+
+Creating a dataset that contains Q29 answers and demographic variables
+```{r}
+mat29<-data1 %>% dplyr::select(c(Q29_native, Q29_implement, Q29_task, Q29_party, Q29_degree, Q29_mass)) #Q29 response matrix
+mat29[mat29==-2]<-NA
+demo<-cbind(data1[,c(146:154, 156, 157)]) #Demographic variable matrix
+full29<-cbind(mat29, demo) #Q29 responses and demographic variables
+#full29<-na.omit(full29) <-Option to drop cases with NAs
+head(full29)
+```
+
+<br>
+
+***
+  This is a bit of code to identify the number of incomplete responses. A participant is coded as lacking attention "1", if they fail to rank at least one option. As you can see, most participants fail to rank all the options.
+  For the rest of the analyses I have used all responses regardless of complete or not. In final form, some method should be used to address these incomplete responses.
+```{r}
+attention<-ifelse(is.na(mat29[,1])==TRUE|is.na(mat29[,2])==TRUE|is.na(mat29[,3])==TRUE|is.na(mat29[,4])==TRUE|is.na(mat29[,5])==TRUE|is.na(mat29[,6])==TRUE, 0, 1)
+sum(attention)
+```
+
+<br>
+
+***
+
+<br>
+
+Chi-Squared test of Independence:
+
+<br>
+
+  As the name suggests, this test determines whether two variables are statistically independent. In short, statistical independence means that the behavior of one variable is not impacted by the other.  
+  This is simplifying it a bit, but the two tables below break down the number of responses to by gender (columns) and ranking (rows). For example, 150 of the male respondents ranked the candidate as their first choice and 119 of the female respondents ranked the candidate as their first choice.  
+  This table is for the "task" candidate. By visual inspection, you can see that the two sexes rank the candidate similarly. Each of the values in column 1 (male) is quite close to the value in column 2 (female), suggesting that gender makes no difference in how a respondent ranks the "task" candidate. This pairing with be proven to be statistically independent by the subsequent Chi-Square test.  
+
+<br>
+
+```{r}
+#A sample of 2-way tables
+##Tables where the distributions are the same (statistically)
+table(full29$Q29_task,full29$gender)
+```
+  This table is for the "native" candidate. In contrast, there are some major differences in rows 3, 4, and 5 between how a male (column 1) respondent ranks the candidate compared to a female respondent (column 2). This pairing will be shown not to be independent.  
+```{r}
+#Significantly different tables
+table(full29$Q29_native,full29$gender)        
+```
+
+<br>
+
+  The results of the Chi-Squared test are displayed below. The null hypothesis of the test is that the two variables are independent, so a small p-value indicates a lack of independence. The highlighted cells are significant at the alpha=0.05 level.  
+```{r}
+##Looping Chi-Squared Test
+combovars<-expand.grid(colnames(mat29), colnames(demo)) #every candidate by every demographic variable
+tabnames<-lapply(paste("table(full29$", combovars$Var1, ",", "full29$", combovars$Var2, ")", sep=""), as.character) #List of model names
+#Function to perform a Chi-Squared test of independence and return the p-value
+func1 <- function(x) {
+  y<-chisq.test(eval(parse(text=x)))
+  p<-y$p.value
+  return(p)
+}
+chisqresults<-t(as.data.frame(lapply(tabnames, func1))) #Run loop and store results
+chisqresults<-cbind(combovars, chisqresults) #Add variable names
+colnames(chisqresults)<-c("Q29Candidate", "DemoVar", "P-Value")
+rownames(chisqresults)<-NULL
+chisqresults[chisqresults=="NaN"]<-NA
+chisqresults$DemoVar[chisqresults$DemoVar=='ethics']<-'ethnicity' #Correcting a misnamed variable
+
+##Display results as table
+chisqresults<-gt(chisqresults)
+alpha<-0.05
+chisqresults<-
+  chisqresults |>
+  tab_header( title="Chi-Square Test of Two-Way Independence") |>
+  tab_source_note(source_note="Birth year and work year have too many unique values to be estimated.")|>
+  tab_source_note(source_note="It is best for this test to have at least five observations for every combination of variables.") |>
+  cols_label(Q29Candidate="Candidate Type", DemoVar="Demographic Variable", `P-Value`="P-Value")|>
+  fmt_number(columns=everything(), rows=everything(), decimals=5)|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=everything(), rows=`P-Value`< alpha))
+chisqresults
+#Option to save as PNG: gtsave(chisqresults, 'chiresults.png', vwidth=1000, vheight=2500) 
+```
+  The Chi-Squared test of independence is non-parametric, meaning it makes no assumptions about how the two variables are distributed. However, there are three limitations to this test.  
+1) The Chi-Squared test cannot deal with zeros. The rule of thumb is that 80% of the expected cell counts should be greater than 5, and no cell should have less than 1. I suspect this is not always the case and a next step would be to identify which combinations violate this rule.  
+2) The Chi-Squared test cannot account for sets of more than two variables. That is, it could be that, conditional on education level, the two sexes rank the "task" candidate differently. This test cannot account for those interactions.  
+
+<br>
+
+  If the results of this Chi-Squared test are to be used in the final manuscript, it may be worthwhile to perform a Cramer's V Test on combinations of nominal variables to show the strength of association.
+
+<br>
+
+***
+
+<br>
+
+Binary Contrast Regression:
+
+<br>
+
+  In this regression, the responses to Question 29 are re-coded into a matrix of binary contrasts. For example, if a given respondent prefer the "implement" candidate to the "task" candidate, then that variable is coded is a "1", and so on.  
+
+<br>
+
+```{r}
+#recode mat29 for rank regression
+combo29<-data.frame()
+for(i in 1:nrow(mat29)) {
+  if (is.na(mat29[i,1])==TRUE | is.na(mat29[i,2])==TRUE){combo29[i,1]<-0} else {if(mat29[i,1]<mat29[i,2]) {combo29[i,1]<-1} else {combo29[i,1]<-0}}
+  if (is.na(mat29[i,1])==TRUE | is.na(mat29[i,3])==TRUE){combo29[i,2]<-0} else {if (mat29[i,1]<mat29[i,3]) {combo29[i,2]<-1} else {combo29[i,2]<-0}}
+  if (is.na(mat29[i,1])==TRUE | is.na(mat29[i,4])==TRUE){combo29[i,3]<-0} else {if (mat29[i,1]<mat29[i,4]) {combo29[i,3]<-1} else {combo29[i,3]<-0}}
+  if (is.na(mat29[i,1])==TRUE | is.na(mat29[i,5])==TRUE){combo29[i,4]<-0} else {if (mat29[i,1]<mat29[i,5]) {combo29[i,4]<-1} else {combo29[i,4]<-0}}
+  if (is.na(mat29[i,1])==TRUE | is.na(mat29[i,6])==TRUE){combo29[i,5]<-0} else {if (mat29[i,1]<mat29[i,6]) {combo29[i,5]<-1} else {combo29[i,5]<-0}}
+  if (is.na(mat29[i,2])==TRUE | is.na(mat29[i,3])==TRUE){combo29[i,6]<-0} else {if (mat29[i,2]<mat29[i,3]) {combo29[i,6]<-1} else {combo29[i,6]<-0}}
+  if (is.na(mat29[i,2])==TRUE | is.na(mat29[i,4])==TRUE){combo29[i,7]<-0} else {if (mat29[i,2]<mat29[i,4]) {combo29[i,7]<-1} else {combo29[i,7]<-0}}
+  if (is.na(mat29[i,2])==TRUE | is.na(mat29[i,5])==TRUE){combo29[i,8]<-0} else {if (mat29[i,2]<mat29[i,5]) {combo29[i,8]<-1} else {combo29[i,8]<-0}}
+  if (is.na(mat29[i,2])==TRUE | is.na(mat29[i,6])==TRUE){combo29[i,9]<-0} else {if (mat29[i,2]<mat29[i,6]) {combo29[i,9]<-1} else {combo29[i,9]<-0}}
+  if (is.na(mat29[i,3])==TRUE | is.na(mat29[i,4])==TRUE){combo29[i,10]<-0} else {if (mat29[i,3]<mat29[i,4]) {combo29[i,10]<-1} else {combo29[i,10]<-0}}
+  if (is.na(mat29[i,3])==TRUE | is.na(mat29[i,5])==TRUE){combo29[i,11]<-0} else {if (mat29[i,3]<mat29[i,5]) {combo29[i,11]<-1} else {combo29[i,11]<-0}}
+  if (is.na(mat29[i,3])==TRUE | is.na(mat29[i,6])==TRUE){combo29[i,12]<-0} else {if (mat29[i,3]<mat29[i,6]) {combo29[i,12]<-1} else {combo29[i,12]<-0}}
+  if (is.na(mat29[i,4])==TRUE | is.na(mat29[i,5])==TRUE){combo29[i,13]<-0} else {if (mat29[i,4]<mat29[i,5]) {combo29[i,13]<-1} else {combo29[i,13]<-0}}
+  if (is.na(mat29[i,4])==TRUE | is.na(mat29[i,6])==TRUE){combo29[i,14]<-0} else {if (mat29[i,4]<mat29[i,6]) {combo29[i,14]<-1} else {combo29[i,14]<-0}}
+  if (is.na(mat29[i,5])==TRUE | is.na(mat29[i,6])==TRUE){combo29[i,15]<-0} else {if (mat29[i,5]<mat29[i,6]) {combo29[i,15]<-1} else {combo29[i,15]<-0}}} #ties ignored
+colnames(combo29)<-c("natimp", "nattask", "natparty", "natdeg", "natmass", "imptask", "impparty", "impdeg", "impmass", "taskparty", "taskdeg", "taskmass", "partydeg", "partymass", "degmass") #candidate listed first is greater than the second
+new29<-cbind(combo29, demo)
+head(new29)
+```
+
+<br>
+
+There are a couple benefits to doing this.  
+  First, is that it allows for partial responses to be included.  
+  Second, is that it allows for the binary preferences to be examined. A multivariate regression would show whether each candidate's mean ranking differs from the other candidates, but would not get at whether one candidate is regularly preferred over another.  
+For reference, here are the mean ranks for each candidate. 
+
+<br>
+
+```{r}
+#Mean rank of each candidate
+mat29[mat29==-2]<-NA
+colMeans(na.omit(mat29))
+```
+  The following code completes the regression and displays the results in a table.  
+  The model used is a binary logistic regression, as the outcome is binary. I mention this because it changes how the results are interpreted, as the outcome variable is logit transformed.  
+  There are some advantages to using this model--errors do not need to be normally distributed, variance does not have to be homogeneous, and the outcome does not need to be normally distributed. One assumption worth commenting on, is that the relationship between the logit-transformed outcome variable and the explanatory variables is assumed to be linear.  
+  The contrast is listed on the left-hand side while the demographic variable is on the right. Highlighted cells are significant.  
+  For example, we can say that female respondents have 0.44 higher log odds of preferring the "native" candidate to the "party" candidate.  
+
+<br>
+
+```{r}
+#Contrast regression
+demovars<-paste(colnames(demo), collapse="+") #concatenate demographic variables
+modelname<-lapply(paste(colnames(combo29), "~", demovars, sep=""), as.formula) #each candidate by all demographic variables
+contrastresults<-data.frame()
+#define function to run multiple logistic regression on each candidate
+func2<-function(x) {
+  y<-glm(x, family="binomial", data=new29)
+  test1<-summary(y)
+  gender<-test1$coefficients[2,1]
+  pgen<-test1$coefficients[2,4]
+  birthyear<-test1$coefficients[3,1]
+  pbirth<-test1$coefficients[3,4]
+  ethics<-test1$coefficients[4,1]
+  peth<-test1$coefficients[4,4]
+  education2<-test1$coefficients[5,1]
+  pedu2<-test1$coefficients[5,4]
+  education3<-test1$coefficients[6,1]
+  pedu3<-test1$coefficients[6,4]
+  education4<-test1$coefficients[7,1]
+  pedu4<-test1$coefficients[7,4]
+  education5<-test1$coefficients[8,1]
+  pedu5<-test1$coefficients[8,4]
+  education6<-test1$coefficients[9,1]
+  pedu6<-test1$coefficients[9,4]
+  political2<-test1$coefficients[10,1]
+  ppol2<-test1$coefficients[10,4]
+  political3<-test1$coefficients[11,1]
+  ppol3<-test1$coefficients[11,4]
+  political4<-test1$coefficients[12,1]
+  ppol4<-test1$coefficients[12,4]
+  political5<-test1$coefficients[13,1]
+  ppol5<-test1$coefficients[13,4]
+  govlevel2<-test1$coefficients[14,1]
+  pgov2<-test1$coefficients[14,4]
+  govlevel3<-test1$coefficients[15,1]
+  pgov3<-test1$coefficients[15,4]
+  govlevel4<-test1$coefficients[16,1]
+  pgov4<-test1$coefficients[16,4]
+  govlevel5<-test1$coefficients[17,1]
+  pgov5<-test1$coefficients[17,4]
+  poslevel2<-test1$coefficients[18,1]
+  ppos2<-test1$coefficients[18,4]
+  poslevel3<-test1$coefficients[19,1]
+  ppos3<-test1$coefficients[19,4]
+  poslevel4<-test1$coefficients[20,1]
+  ppos4<-test1$coefficients[20,4]
+  poslevel5<-test1$coefficients[21,1]
+  ppos5<-test1$coefficients[21,4]
+  poslevel6<-test1$coefficients[22,1]
+  ppos6<-test1$coefficients[22,4]
+  poslevel7<-test1$coefficients[23,1]
+  ppos7<-test1$coefficients[23,4]
+  poslevel11<-test1$coefficients[24,1]
+  ppos11<-test1$coefficients[24, 4]
+  leadership<-test1$coefficients[25,1]
+  plead<-test1$coefficients[25,4]
+  workyear<-test1$coefficients[26,1]
+  pwork<-test1$coefficients[26,4]
+  nativecadre2<-test1$coefficients[27,1]
+  pnative2<-test1$coefficients[27,4]
+  nativecadre3<-test1$coefficients[28,1]
+  pnative3<-test1$coefficients[28,4]
+  nativecadre4<-test1$coefficients[29,1]
+  pnative4<-test1$coefficients[29,4]
+  localcadre2<-test1$coefficients[30,1]
+  ploc2<-test1$coefficients[30,4]
+  localcadre3<-test1$coefficients[31,1]
+  ploc3<-test1$coefficients[31,4]
+  localcadre4<-test1$coefficients[32,1]
+  ploc4<-test1$coefficients[32,4]
+    return(c(gender, pgen, birthyear, pbirth, ethics, peth, education2, pedu2, education3, pedu3, education4, pedu4, education5, pedu5, education6, pedu6, political2, ppol2, political3, ppol3,political4, ppol4, political5, ppol5, govlevel2, pgov2, govlevel3, pgov3, govlevel4, pgov4, govlevel5, pgov5, poslevel2, ppos2, poslevel3, ppos3, poslevel4, ppos4, poslevel5, ppos5, poslevel6,ppos6, poslevel7, ppos7, poslevel11, ppos11, leadership, plead, workyear, pwork, nativecadre2, pnative2, nativecadre3, pnative3, nativecadre4, pnative4, localcadre2, ploc2, localcadre3, ploc3, localcadre4, ploc4
+))}
+contrastresults<-t(as.data.frame(lapply(modelname, func2))) #run loop
+#Prepare data for display
+rownames(contrastresults)<-c("Native>Implement", "Native>Task", "Native>Party", "Native>Degree", "Native>Mass", "Implement>Task", "Implement>Party", "Implement>Degree", "Implement>Mass", "Task>Party", "Task>Degree", "Task>Mass", "Party>Degree", "Party>Mass", "Degree>Mass")
+colnames(contrastresults)<-c("gender", "pgen", "birthyear", "pbirth", "ethics", "peth", "education2", "pedu2", "education3", "pedu3", "education4", "pedu4", "education5", "pedu5", "education6", "pedu6", "political2", "ppol2", "political3", "ppol3", "political4", "ppol4", "political5", "ppol5", "govlevel2", "pgov2", "govlevel3", "pgov3", "govlevel4", "pgov4", "govlevel5", "pgov5", "poslevel2", "ppos2", "poslevel3", "ppos3", "poslevel4", "ppos4", "poslevel5", "ppos5", "poslevel6", "ppos6", "poslevel7", "ppos7", "poslevel11", "ppos11", "leadership", "plead", "workyear", "pwork", "nativecadre2", "pnative2", "nativecadre3", "pnative3", "nativecadre4", "pnative4", "localcadre2", "ploc2", "localcadre3", "ploc3", "localcadre4", "ploc4")
+
+#Display as table
+contrastresults<-gt(as.data.frame(contrastresults), rownames_to_stub = TRUE)
+contrastresults<-
+  contrastresults |>
+  tab_header(title="Binary Contrasts Results") |>
+  tab_caption(caption="A logistic regression is used, meaning that the coefficients should be interpreted as a change in log odds.")|>
+  tab_source_note(source_note="A significant cell should be interpreted as the varibale significantly changing the likelihood of the respondant agreeing with the specified contrast relative to the baseline category.")|>
+  tab_stubhead(label="Comparison") |>
+    tab_spanner(label="Gender", columns=c(gender, pgen)) |>
+    tab_spanner(label="Year of Birth", columns=c(birthyear, pbirth)) |>
+    tab_spanner(label="Ethnicity", columns=c(ethics, peth)) |>
+  tab_spanner(label="Highest Degree Earned", columns=c("education2", "pedu2", "education3", "pedu3", "education4", "pedu4", "education5", "pedu5", "education6", "pedu6")) |>
+  tab_spanner(label="Political Affiliation", columns=c(political2, ppol2, political3, ppol3, political4, ppol4, political5, ppol5)) |>
+    tab_spanner(label="Government Level", columns=c(govlevel2, pgov2, govlevel3, pgov3, govlevel4, pgov4, govlevel5, pgov5)) |>
+    tab_spanner(label="Current Position Level", columns=c(poslevel2, ppos2, poslevel3, ppos3, poslevel4, ppos4, poslevel5, ppos5, poslevel6, ppos6, poslevel7, ppos7, poslevel11, ppos11)) |>
+    tab_spanner(label="Leadership Position", columns=c(leadership, "plead")) |>
+    tab_spanner(label="Work Year", columns=c(workyear, pwork)) |>
+    tab_spanner(label="Serve in Place of Origin", columns=c(nativecadre2, pnative2, nativecadre3, pnative3, nativecadre4, pnative4)) |>
+    tab_spanner(label="Locally Employed", columns=c("localcadre2", "ploc2", "localcadre3", "ploc3", "localcadre4", "ploc4")) |>
+    cols_label(
+    gender="Female",
+    pgen="P-Value",
+    birthyear="Year",
+    pbirth="P-Value",
+    ethics="Minority",
+    peth="P-Value",
+    education2="College",
+    pedu2="P-Value",
+    education3="Bachelor's",
+    pedu3="P-Value",
+    education4="Master's",
+    pedu4="P-Value",
+    education5="PhD",
+    pedu5="P-Value",
+    education6="Other",
+    pedu6="P-Value",
+    political2="CCP Applicant",
+    ppol2="P-Value",
+    political3="Democratic Party",
+    ppol3="P-Value",
+    political4="No Affiliation",
+    ppol4="P-Value",
+    political5="Masses",
+    ppol5="P-Value",
+    govlevel2="County",
+    pgov2="P-Value",
+    govlevel3="Municipal",
+    pgov3="P-Value",
+    govlevel4="Province",
+    pgov4="P-Value",
+    govlevel5="Central",
+    pgov5="P-Value",
+    poslevel2="Section Director",
+    ppos2="P-Value",
+    poslevel3="Deputy/Chief",
+    ppos3="P-Value",
+    poslevel4="Dep/Division Head",
+    ppos4="P-Value",
+    poslevel5="Dep/Bureau Head",
+    ppos5="P-Value",
+    poslevel6="Vice Minister",
+    ppos6="P-Value",
+    poslevel7="Ministry Leader",
+    ppos7="P-Value",
+    poslevel11="Others",
+    ppos11="P-Value",
+    leadership="No",
+    plead="P-Value",
+    workyear="Year",
+    pwork="P-Value",
+    nativecadre2="Same City",
+    pnative2="P-Value",
+    nativecadre3="Same Province",
+    pnative3="P-Value",
+    nativecadre4="No",
+    pnative4="P-Value",
+    localcadre2="Same City",
+    ploc2="P-Value",
+    localcadre3="Same Province; Several Cities",
+    ploc3="P-Value",
+    localcadre4="No",
+    ploc4="P-Value"
+  )|>
+  fmt_number(columns=everything(), rows=everything(), decimals=5)|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(gender, pgen), rows=pgen<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(birthyear, pbirth), rows=pbirth<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(ethics, peth), rows=peth<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(education2, pedu2), rows=pedu2<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(education3, pedu3), rows=pedu3<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(education4, pedu4), rows=pedu4<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(education5, pedu5), rows=pedu5<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(education6, pedu6), rows=pedu6<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(political2, ppol2), rows=ppol2<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(political3, ppol3), rows=ppol3<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(political4, ppol4), rows=ppol4<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(political5, ppol5), rows=ppol5<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(govlevel2, pgov2), rows=pgov2<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(govlevel3, pgov3), rows=pgov3<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(govlevel4, pgov4), rows=pgov4<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(govlevel5, pgov5), rows=pgov5<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel2, ppos2), rows=ppos2<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel3, ppos3), rows=ppos3<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel4, ppos4), rows=ppos4<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel5, ppos5), rows=ppos5<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel6, ppos6), rows=ppos6<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel7, ppos7), rows=ppos7<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(poslevel11, ppos11), rows=ppos11<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(leadership, plead), rows=plead<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(workyear, pwork), rows=pwork<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(nativecadre2, pnative2), rows=pnative2<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(nativecadre3, pnative3), rows=pnative3<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(nativecadre4, pnative4), rows=pnative4<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(localcadre2, ploc2), rows=ploc2<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(localcadre3, ploc3), rows=ploc3<alpha))|>
+  tab_style(style=list(cell_fill(color="lightblue")), locations=cells_body(columns=c(localcadre4, ploc4), rows=ploc4<alpha))
+#Option to save as PNG: gtsave(contrastresults, 'contrastresults.png', vwidth=6000, vheight=1000)  
+contrastresults
+```
+
+<br>
+
+  The primary drawback to this analysis is the lack of interactions. Some of the highlighted coefficients may not be significant if the other demographic variables are accounted for, and vice-versa. For example, I suspect that the impact of gender on candidate preference may change or even disappear if government and position level are accounted for.  
+  Binary logistic regression relies on maximum likelihood estimation, and there are simply not enough respondents for each combination of demographic factors to estimate all the interaction terms. For the final product, an alternate method to account for interactions will have to be created.  
